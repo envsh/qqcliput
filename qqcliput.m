@@ -1,0 +1,144 @@
+#import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>
+#import <CoreImage/CoreImage.h>
+#import <Vision/Vision.h>
+#import "qqcliput.h"
+
+static uint32_t findQQWindow(void) {
+    while (1) {
+        @autoreleasepool {
+            CFArrayRef windowList = CGWindowListCopyWindowInfo(
+                kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
+            if (!windowList) {
+                [NSThread sleepForTimeInterval:5.0];
+                continue;
+            }
+
+            uint32_t bestWID = 0;
+            CFIndex count = CFArrayGetCount(windowList);
+
+            for (CFIndex i = 0; i < count; i++) {
+                NSDictionary *info = (__bridge NSDictionary *)CFArrayGetValueAtIndex(windowList, i);
+
+                NSString *owner = info[(__bridge NSString *)kCGWindowOwnerName];
+                if (![owner isEqualToString:@"QQ"]) continue;
+
+                NSNumber *layer = info[(__bridge NSString *)kCGWindowLayer];
+                if ([layer integerValue] != 0) continue;
+
+                NSDictionary *boundsDict = info[(__bridge NSString *)kCGWindowBounds];
+                CGRect bounds;
+                CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)boundsDict, &bounds);
+                if (bounds.size.width < 300 || bounds.size.height < 200) continue;
+
+                NSNumber *widNum = info[(__bridge NSString *)kCGWindowNumber];
+                bestWID = [widNum unsignedIntValue];
+            }
+
+            CFRelease(windowList);
+            if (bestWID != 0) return bestWID;
+        }
+        [NSThread sleepForTimeInterval:5.0];
+    }
+}
+
+uint32_t find_qq_window(void) {
+    return findQQWindow();
+}
+
+int is_qq_frontmost(void) {
+    @autoreleasepool {
+        CFArrayRef windowList = CGWindowListCopyWindowInfo(
+            kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
+        if (!windowList) return 0;
+
+        CFIndex count = CFArrayGetCount(windowList);
+        for (CFIndex i = 0; i < count; i++) {
+            NSDictionary *info = (__bridge NSDictionary *)CFArrayGetValueAtIndex(windowList, i);
+            NSNumber *layer = info[(__bridge NSString *)kCGWindowLayer];
+            if ([layer integerValue] != 0) continue;
+            NSString *owner = info[(__bridge NSString *)kCGWindowOwnerName];
+            if (owner && [owner isEqualToString:@"QQ"]) {
+                CFRelease(windowList);
+                return 1;
+            }
+        }
+
+        CFRelease(windowList);
+        return 0;
+    }
+}
+
+int window_exists(uint32_t window_id) {
+    @autoreleasepool {
+        CFArrayRef windowList = CGWindowListCopyWindowInfo(
+            kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
+        if (!windowList) return 0;
+
+        CFIndex count = CFArrayGetCount(windowList);
+        int found = 0;
+
+        for (CFIndex i = 0; i < count; i++) {
+            NSDictionary *info = (__bridge NSDictionary *)CFArrayGetValueAtIndex(windowList, i);
+            NSNumber *widNum = info[(__bridge NSString *)kCGWindowNumber];
+            if ([widNum unsignedIntValue] == window_id) {
+                found = 1;
+                break;
+            }
+        }
+
+        CFRelease(windowList);
+        return found;
+    }
+}
+
+static CGImageRef captureWindow(uint32_t window_id) {
+    CGImageRef image = CGWindowListCreateImage(
+        CGRectNull,
+        kCGWindowListOptionIncludingWindow,
+        (CGWindowID)window_id,
+        kCGWindowImageBoundsIgnoreFraming);
+    return image;
+}
+
+static NSString *ocrImage(CGImageRef image) {
+    if (!image) return nil;
+
+    CIImage *ciImage = [[CIImage alloc] initWithCGImage:image];
+
+    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc]
+        initWithCIImage:ciImage options:@{}];
+
+    VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] init];
+    request.recognitionLevel = 0;
+    request.recognitionLanguages = @[@"zh-Hans", @"en-US"];
+    request.usesLanguageCorrection = YES;
+
+    NSError *error = nil;
+    [handler performRequests:@[request] error:&error];
+    if (error) return nil;
+
+    NSMutableArray *results = [NSMutableArray array];
+    for (VNRecognizedTextObservation *observation in request.results) {
+        VNRecognizedText *top = [observation topCandidates:1].firstObject;
+        if (top.string) {
+            [results addObject:top.string];
+        }
+    }
+
+    if (results.count == 0) return nil;
+    return [results componentsJoinedByString:@"\n"];
+}
+
+char *ocr_window(uint32_t window_id) {
+    @autoreleasepool {
+        CGImageRef image = captureWindow(window_id);
+        if (!image) return strdup("");
+
+        NSString *text = ocrImage(image);
+        CGImageRelease(image);
+
+        if (!text || text.length == 0) return strdup("");
+        return strdup([text UTF8String]);
+    }
+}
