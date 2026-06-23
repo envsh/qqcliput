@@ -27,14 +27,12 @@ type Message struct {
 	Duration string `json:"duration,omitempty"`
 }
 
-const (
-	clusterOverlap = 0.001
-)
-
 var (
-	reTimeAMPM = regexp.MustCompile(`(上午|下午|早上|晚上)\d{1,2}:\d{2}`)
+	reTimeAMPM = regexp.MustCompile(`(上午|下午|早上|晚上)\s*\d{1,2}:\d{2}`)
 	reTimeHM   = regexp.MustCompile(`\d{1,2}:\d{2}`)
 	reDuration = regexp.MustCompile(`\d{1,3}:\d{2}`)
+	reDigits   = regexp.MustCompile(`^\d{1,2}$`)
+	reColon    = regexp.MustCompile(`^:\d{1,2}$`)
 )
 
 func parseOCRJSON(raw string) []Block {
@@ -45,14 +43,49 @@ func parseOCRJSON(raw string) []Block {
 	return blocks
 }
 
+func mergeTimeFragments(blocks []Block) []Block {
+	if len(blocks) < 2 {
+		return blocks
+	}
+
+	sorted := make([]Block, len(blocks))
+	copy(sorted, blocks)
+	sort.Slice(sorted, func(i, j int) bool {
+		if math.Abs(sorted[i].Y-sorted[j].Y) > 0.015 {
+			return sorted[i].Y > sorted[j].Y
+		}
+		return sorted[i].X < sorted[j].X
+	})
+
+	merged := make([]Block, 0, len(sorted))
+	skip := false
+	for i := 0; i < len(sorted); i++ {
+		if skip {
+			skip = false
+			continue
+		}
+
+		t := strings.TrimSpace(sorted[i].Text)
+		if reDigits.MatchString(t) && i+1 < len(sorted) {
+			nextT := strings.TrimSpace(sorted[i+1].Text)
+			if reColon.MatchString(nextT) {
+				sorted[i].Text = t + nextT
+				merged = append(merged, sorted[i])
+				skip = true
+				continue
+			}
+		}
+
+		merged = append(merged, sorted[i])
+	}
+	return merged
+}
+
 func autoChatRange(blocks []Block) (minX, maxX float64) {
 	if len(blocks) < 2 {
 		return 0, 1
 	}
 
-	// Chat messages are WIDE blocks that span across the center (X=0.5).
-	// Sidebar and right panel blocks are narrow and don't cross X=0.5.
-	// Find blocks that span X=0.5 to locate the chat area boundaries.
 	minX = 1.0
 	maxX = 0.0
 	found := false
@@ -70,7 +103,6 @@ func autoChatRange(blocks []Block) (minX, maxX float64) {
 	}
 
 	if !found {
-		// Fallback: use the block whose center is closest to X=0.5
 		bestDist := 1.0
 		for _, b := range blocks {
 			cx := b.X + b.W/2
@@ -83,7 +115,6 @@ func autoChatRange(blocks []Block) (minX, maxX float64) {
 		}
 	}
 
-	// Add padding to include sender names (left) and timestamps (right)
 	minX -= 0.04
 	maxX += 0.04
 	if minX < 0 {
@@ -119,26 +150,22 @@ func clusterBlocks(blocks []Block) [][]Block {
 
 	var groups [][]Block
 	cur := []Block{blocks[0]}
-	curTop := blocks[0].Y - blocks[0].H
-	curBot := blocks[0].Y
+	curAvgCenter := blocks[0].Y - blocks[0].H/2
+	curCount := 1
 
 	for i := 1; i < len(blocks); i++ {
 		b := blocks[i]
-		bTop := b.Y - b.H
-		bBot := b.Y
+		bCenter := b.Y - b.H/2
 
-		if bTop < curBot-clusterOverlap && bBot > curTop+clusterOverlap {
+		if math.Abs(curAvgCenter-bCenter) < 0.035 {
 			cur = append(cur, b)
-			if bTop < curTop {
-				curTop = bTop
-			}
-			if bBot > curBot {
-				curBot = bBot
-			}
+			curAvgCenter = (curAvgCenter*float64(curCount) + bCenter) / float64(curCount+1)
+			curCount++
 		} else {
 			groups = append(groups, cur)
 			cur = []Block{b}
-			curTop, curBot = bTop, bBot
+			curAvgCenter = bCenter
+			curCount = 1
 		}
 	}
 	groups = append(groups, cur)
@@ -183,35 +210,13 @@ func inferGroupTitle(group []Block) (string, bool) {
 	return t, true
 }
 
-func inferMessage(group []Block) Message {
-	if len(group) == 0 {
+func buildMessage(blocks []Block) Message {
+	if len(blocks) == 0 {
 		return Message{Type: "empty"}
 	}
 
-	// Single block: try splitting "Sender：Content"
-	if len(group) == 1 {
-		t := strings.TrimSpace(group[0].Text)
-		if t == "" {
-			return Message{Type: "empty"}
-		}
-		if isTimeString(t) {
-			return Message{Time: t, Type: "text"}
-		}
-		sender, content, ok := splitSenderContent(t)
-		if !ok {
-			content = t
-		}
-		msgType := detectType(sender, "", content, group)
-		duration := ""
-		if msgType == "video" {
-			duration = extractDuration(content, group)
-		}
-		return Message{Sender: sender, Time: "", Type: msgType, Content: content, Duration: duration}
-	}
-
-	// Multiple blocks: leftmost short block is sender, rest is content
-	sorted := make([]Block, len(group))
-	copy(sorted, group)
+	sorted := make([]Block, len(blocks))
+	copy(sorted, blocks)
 	sort.Slice(sorted, func(i, j int) bool {
 		return sorted[i].X < sorted[j].X
 	})
@@ -229,7 +234,6 @@ func inferMessage(group []Block) Message {
 			continue
 		}
 		if !senderFound && isSenderString(t, b.X) {
-			// Very short text that's close to next block: OCR fragment, not sender
 			if len([]rune(t)) <= 3 && i+1 < len(sorted) {
 				if sorted[i+1].X-(b.X+b.W) < 0.03 {
 					if content != "" {
@@ -250,10 +254,10 @@ func inferMessage(group []Block) Message {
 	}
 
 	content = strings.TrimSpace(content)
-	msgType := detectType(sender, timeStr, content, group)
+	msgType := detectType(sender, timeStr, content, blocks)
 	duration := ""
 	if msgType == "video" {
-		duration = extractDuration(content, group)
+		duration = extractDuration(content, blocks)
 	}
 
 	return Message{
@@ -263,6 +267,108 @@ func inferMessage(group []Block) Message {
 		Content:  content,
 		Duration: duration,
 	}
+}
+
+func inferMessages(group []Block) []Message {
+	if len(group) == 0 {
+		return nil
+	}
+
+	// Single block
+	if len(group) == 1 {
+		t := strings.TrimSpace(group[0].Text)
+		if t == "" {
+			return nil
+		}
+		if isTimeString(t) {
+			return []Message{{Time: t, Type: "text"}}
+		}
+		sender, content, ok := splitSenderContent(t)
+		if !ok {
+			content = t
+		}
+		msgType := detectType(sender, "", content, group)
+		duration := ""
+		if msgType == "video" {
+			duration = extractDuration(content, group)
+		}
+		return []Message{{Sender: sender, Time: "", Type: msgType, Content: content, Duration: duration}}
+	}
+
+	// Multiple blocks: detect if cluster contains multiple messages
+	xSorted := make([]Block, len(group))
+	copy(xSorted, group)
+	sort.Slice(xSorted, func(i, j int) bool {
+		return xSorted[i].X < xSorted[j].X
+	})
+
+	type cand struct{ yAvg float64 }
+	var cands []cand
+	for _, b := range xSorted {
+		t := strings.TrimSpace(b.Text)
+		if t == "" {
+			continue
+		}
+		if isTimeString(t) {
+			continue
+		}
+		if strings.HasPrefix(t, "[") {
+			continue
+		}
+		if len([]rune(t)) > 10 {
+			continue
+		}
+		if b.X > 0.35 {
+			continue
+		}
+		if len(t) <= 4 {
+			allDigit := true
+			for _, r := range t {
+				if r < '0' || r > '9' {
+					allDigit = false
+					break
+				}
+			}
+			if allDigit {
+				continue
+			}
+		}
+		cands = append(cands, cand{b.Y - b.H/2})
+	}
+
+	if len(cands) >= 2 {
+		sort.Slice(cands, func(p, q int) bool {
+			return cands[p].yAvg > cands[q].yAvg
+		})
+		maxGap := 0.0
+		splitY := 0.0
+		for p := 0; p < len(cands)-1; p++ {
+			gap := cands[p].yAvg - cands[p+1].yAvg
+			if gap > maxGap {
+				maxGap = gap
+				splitY = (cands[p].yAvg + cands[p+1].yAvg) / 2
+			}
+		}
+
+		if splitY > 0 {
+			var sub1, sub2 []Block
+			for _, b := range group {
+				if b.Y >= splitY {
+					sub1 = append(sub1, b)
+				} else {
+					sub2 = append(sub2, b)
+				}
+			}
+			if len(sub1) > 0 && len(sub2) > 0 {
+				var msgs []Message
+				msgs = append(msgs, inferMessages(sub1)...)
+				msgs = append(msgs, inferMessages(sub2)...)
+				return msgs
+			}
+		}
+	}
+
+	return []Message{buildMessage(group)}
 }
 
 func isTimeString(s string) bool {

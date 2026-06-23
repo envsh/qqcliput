@@ -2,6 +2,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <CoreImage/CoreImage.h>
 #import <Vision/Vision.h>
+#import <objc/message.h>
 #import "qqcliput.h"
 
 static uint32_t findQQWindow(void) {
@@ -111,8 +112,12 @@ static NSString *ocrImage(CGImageRef image) {
 
     VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] init];
     request.recognitionLevel = 0;
-    request.recognitionLanguages = @[@"zh-Hans", @"en-US"];
+    request.recognitionLanguages = @[@"zh-Hans", @"zh-Hant", @"en-US"];
     request.usesLanguageCorrection = YES;
+    SEL autoLangSel = NSSelectorFromString(@"setAutomaticallyDetectsLanguage:");
+    if ([request respondsToSelector:autoLangSel]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(request, autoLangSel, YES);
+    }
 
     NSError *error = nil;
     [handler performRequests:@[request] error:&error];
@@ -140,8 +145,12 @@ static NSString *ocrImageJSON(CGImageRef image) {
 
     VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] init];
     request.recognitionLevel = 0;
-    request.recognitionLanguages = @[@"zh-Hans", @"en-US"];
+    request.recognitionLanguages = @[@"zh-Hans", @"zh-Hant", @"en-US"];
     request.usesLanguageCorrection = YES;
+    SEL autoLangSel = NSSelectorFromString(@"setAutomaticallyDetectsLanguage:");
+    if ([request respondsToSelector:autoLangSel]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(request, autoLangSel, YES);
+    }
 
     NSError *error = nil;
     [handler performRequests:@[request] error:&error];
@@ -234,8 +243,12 @@ static NSString *ocrImageRegionJSON(CGImageRef fullImage, CGFloat nx, CGFloat ny
 
     VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] init];
     request.recognitionLevel = 0;
-    request.recognitionLanguages = @[@"zh-Hans", @"en-US"];
+    request.recognitionLanguages = @[@"zh-Hans", @"zh-Hant", @"en-US"];
     request.usesLanguageCorrection = YES;
+    SEL autoLangSel = NSSelectorFromString(@"setAutomaticallyDetectsLanguage:");
+    if ([request respondsToSelector:autoLangSel]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(request, autoLangSel, YES);
+    }
 
     NSError *error = nil;
     [handler performRequests:@[request] error:&error];
