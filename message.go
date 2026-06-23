@@ -27,7 +27,9 @@ type Message struct {
 	Duration string `json:"duration,omitempty"`
 }
 
-const yThreshold = 0.025
+const (
+	clusterOverlap = 0.001
+)
 
 var (
 	reTimeAMPM = regexp.MustCompile(`(上午|下午|早上|晚上)\d{1,2}:\d{2}`)
@@ -43,28 +45,100 @@ func parseOCRJSON(raw string) []Block {
 	return blocks
 }
 
+func autoChatRange(blocks []Block) (minX, maxX float64) {
+	if len(blocks) < 2 {
+		return 0, 1
+	}
+
+	// Chat messages are WIDE blocks that span across the center (X=0.5).
+	// Sidebar and right panel blocks are narrow and don't cross X=0.5.
+	// Find blocks that span X=0.5 to locate the chat area boundaries.
+	minX = 1.0
+	maxX = 0.0
+	found := false
+
+	for _, b := range blocks {
+		if b.X < 0.5 && b.X+b.W > 0.5 {
+			if b.X < minX {
+				minX = b.X
+			}
+			if b.X+b.W > maxX {
+				maxX = b.X + b.W
+			}
+			found = true
+		}
+	}
+
+	if !found {
+		// Fallback: use the block whose center is closest to X=0.5
+		bestDist := 1.0
+		for _, b := range blocks {
+			cx := b.X + b.W/2
+			dist := math.Abs(cx - 0.5)
+			if dist < bestDist {
+				bestDist = dist
+				minX = b.X
+				maxX = b.X + b.W
+			}
+		}
+	}
+
+	// Add padding to include sender names (left) and timestamps (right)
+	minX -= 0.04
+	maxX += 0.04
+	if minX < 0 {
+		minX = 0
+	}
+	if maxX > 1 {
+		maxX = 1
+	}
+
+	return
+}
+
+func filterChatArea(blocks []Block) []Block {
+	minX, maxX := autoChatRange(blocks)
+	var out []Block
+	for _, b := range blocks {
+		cx := b.X + b.W/2
+		if cx > minX && cx < maxX {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
 func clusterBlocks(blocks []Block) [][]Block {
 	if len(blocks) == 0 {
 		return nil
 	}
 
 	sort.Slice(blocks, func(i, j int) bool {
-		if math.Abs(blocks[i].Y-blocks[j].Y) < yThreshold/2 {
-			return blocks[i].X < blocks[j].X
-		}
 		return blocks[i].Y > blocks[j].Y
 	})
 
 	var groups [][]Block
 	cur := []Block{blocks[0]}
+	curTop := blocks[0].Y - blocks[0].H
+	curBot := blocks[0].Y
 
 	for i := 1; i < len(blocks); i++ {
-		lastY := cur[len(cur)-1].Y
-		if math.Abs(blocks[i].Y-lastY) < yThreshold {
-			cur = append(cur, blocks[i])
+		b := blocks[i]
+		bTop := b.Y - b.H
+		bBot := b.Y
+
+		if bTop < curBot-clusterOverlap && bBot > curTop+clusterOverlap {
+			cur = append(cur, b)
+			if bTop < curTop {
+				curTop = bTop
+			}
+			if bBot > curBot {
+				curBot = bBot
+			}
 		} else {
 			groups = append(groups, cur)
-			cur = []Block{blocks[i]}
+			cur = []Block{b}
+			curTop, curBot = bTop, bBot
 		}
 	}
 	groups = append(groups, cur)
@@ -77,7 +151,7 @@ func inferGroupTitle(group []Block) (string, bool) {
 		return "", false
 	}
 	b := group[0]
-	if b.X > 0.3 && b.X < 0.8 && b.Text != "" {
+	if b.X > 0.2 && b.X < 0.8 && b.Text != "" {
 		return strings.TrimSpace(b.Text), true
 	}
 	return "", false
@@ -135,13 +209,22 @@ func isTimeString(s string) bool {
 }
 
 func isSenderString(s string, x float64) bool {
-	if len([]rune(s)) > 8 {
+	if len([]rune(s)) > 10 {
 		return false
 	}
-	if x > 0.35 {
+	if x > 0.40 {
 		return false
 	}
 	if isTimeString(s) {
+		return false
+	}
+	if s == "" {
+		return false
+	}
+	if len([]rune(s)) <= 3 && strings.ContainsAny(s, "一二三四五六日天") {
+		return false
+	}
+	if strings.HasPrefix(s, "[") {
 		return false
 	}
 	return true

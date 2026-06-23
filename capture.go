@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 )
 
 var (
 	seenHashes   = map[string]bool{}
 	currentGroup string
+	firstOCR     = true
 )
 
 func setStatus(text string) {
@@ -31,6 +33,10 @@ func captureLoop(ctx context.Context) {
 		return
 	}
 
+	fmt.Fprintf(os.Stderr, "=== qqcliput started ===\n")
+	w, h := cGetWindowBounds(wid)
+	fmt.Fprintf(os.Stderr, "QQ window detected: id=%d, size=%dx%d\n", wid, w, h)
+
 	setStatus("运行中")
 
 	ticker := time.NewTicker(1 * time.Second)
@@ -51,6 +57,10 @@ func captureLoop(ctx context.Context) {
 				}()
 				select {
 				case wid = <-widCh:
+					fmt.Fprintf(os.Stderr, "=== qqcliput started ===\n")
+					w, h := cGetWindowBounds(wid)
+					fmt.Fprintf(os.Stderr, "QQ window detected: id=%d, size=%dx%d\n", wid, w, h)
+
 					setStatus("运行中")
 				case <-ctx.Done():
 					return
@@ -65,6 +75,30 @@ func captureLoop(ctx context.Context) {
 		}
 
 		blocks := parseOCRJSON(raw)
+		blocks = filterChatArea(blocks)
+		if firstOCR && len(blocks) > 0 {
+			rawBlocks := parseOCRJSON(raw)
+			minX, maxX := autoChatRange(rawBlocks)
+			fmt.Fprintf(os.Stderr, "=== Auto-detected chat area: X %.2f ~ %.2f ===\n", minX, maxX)
+			const nb = 50
+			var buckets [nb]int
+			for _, b := range rawBlocks {
+				cx := b.X + b.W/2
+				idx := int(cx / 0.02)
+				if idx >= nb {
+					idx = nb - 1
+				}
+				buckets[idx]++
+			}
+			fmt.Fprintf(os.Stderr, "=== Density:")
+			for i, v := range buckets {
+				if v > 0 {
+					fmt.Fprintf(os.Stderr, " %.2f:%d", float64(i)*0.02, v)
+				}
+			}
+			fmt.Fprintf(os.Stderr, " ===\n")
+			firstOCR = false
+		}
 		if len(blocks) == 0 {
 			continue
 		}

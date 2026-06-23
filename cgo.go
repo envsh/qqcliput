@@ -7,7 +7,10 @@ package main
 */
 import "C"
 
-import "unsafe"
+import (
+	"encoding/json"
+	"unsafe"
+)
 
 func cFindQQWindow() uint32 {
 	return uint32(C.find_qq_window())
@@ -28,6 +31,19 @@ func cWindowExists(wid uint32) bool {
 
 func cIsQQFrontmost() bool {
 	return C.is_qq_frontmost() != 0
+}
+
+func cGetWindowBounds(wid uint32) (w int, h int) {
+	cstr := C.get_window_bounds(C.uint32_t(wid))
+	if cstr == nil {
+		return 0, 0
+	}
+	defer C.free(unsafe.Pointer(cstr))
+	var m map[string]int
+	if err := json.Unmarshal([]byte(C.GoString(cstr)), &m); err != nil {
+		return 0, 0
+	}
+	return m["w"], m["h"]
 }
 
 func cOCRWindowJSON(wid uint32) string {

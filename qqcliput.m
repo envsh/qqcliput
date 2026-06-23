@@ -194,3 +194,29 @@ char *ocr_window(uint32_t window_id) {
         return strdup([text UTF8String]);
     }
 }
+
+char *get_window_bounds(uint32_t window_id) {
+    @autoreleasepool {
+        CFArrayRef windows = CGWindowListCopyWindowInfo(
+            kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
+        if (!windows) return strdup("{}");
+
+        CFIndex count = CFArrayGetCount(windows);
+        for (CFIndex i = 0; i < count; i++) {
+            NSDictionary *info = (__bridge NSDictionary *)CFArrayGetValueAtIndex(windows, i);
+            NSNumber *widNum = info[(__bridge NSString *)kCGWindowNumber];
+            if ([widNum unsignedIntValue] == window_id) {
+                NSDictionary *boundsDict = info[(__bridge NSString *)kCGWindowBounds];
+                CGRect bounds;
+                CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)boundsDict, &bounds);
+                CFRelease(windows);
+                NSString *json = [NSString stringWithFormat:@"{\"w\":%.0f,\"h\":%.0f}",
+                    bounds.size.width, bounds.size.height];
+                return strdup([json UTF8String]);
+            }
+        }
+
+        CFRelease(windows);
+        return strdup("{}");
+    }
+}
