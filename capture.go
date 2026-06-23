@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 )
 
-var lastText string
+var (
+	seenHashes   = map[string]bool{}
+	currentGroup string
+)
 
 func setStatus(text string) {
 	mStatus.SetTitle("状态: " + text)
@@ -55,17 +59,60 @@ func captureLoop(ctx context.Context) {
 			continue
 		}
 
-		text := cOCRWindow(wid)
-		if text == "" {
+		raw := cOCRWindowJSON(wid)
+		if raw == "[]" || raw == "" {
 			continue
 		}
 
-		if text != lastText {
-			now := time.Now()
-			fmt.Printf("[%s] %s\n", now.Format("15:04:05"), text)
-			lastText = text
+		blocks := parseOCRJSON(raw)
+		if len(blocks) == 0 {
+			continue
+		}
+
+		groups := clusterBlocks(blocks)
+		now := time.Now()
+		anyNew := false
+
+		if len(groups) > 0 {
+			name, ok := inferGroupTitle(groups[0])
+			if ok {
+				currentGroup = name
+			}
+		}
+
+		for i := len(groups) - 1; i >= 0; i-- {
+			msg := inferMessage(groups[i])
+			if msg.Type == "empty" {
+				continue
+			}
+
+			if name, ok := inferGroupTitle(groups[i]); ok {
+				currentGroup = name
+				continue
+			}
+
+			if msg.Sender == "" && msg.Content == "" {
+				continue
+			}
+
+			msg.Group = currentGroup
+			hash := blockHash(msg)
+			if seenHashes[hash] {
+				continue
+			}
+			seenHashes[hash] = true
+
+			b, err := json.Marshal(msg)
+			if err != nil {
+				continue
+			}
+			fmt.Println(string(b))
+			ringBuffer.Append(now, string(b))
+			anyNew = true
+		}
+
+		if anyNew {
 			mLastMsg.SetTitle(fmt.Sprintf("消息: %s", now.Format("15:04:05")))
-			ringBuffer.Append(now, text)
 		}
 	}
 }

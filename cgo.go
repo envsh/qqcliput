@@ -29,3 +29,12 @@ func cWindowExists(wid uint32) bool {
 func cIsQQFrontmost() bool {
 	return C.is_qq_frontmost() != 0
 }
+
+func cOCRWindowJSON(wid uint32) string {
+	cstr := C.ocr_window_json(C.uint32_t(wid))
+	if cstr == nil {
+		return "[]"
+	}
+	defer C.free(unsafe.Pointer(cstr))
+	return C.GoString(cstr)
+}

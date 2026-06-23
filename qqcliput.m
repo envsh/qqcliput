@@ -130,6 +130,58 @@ static NSString *ocrImage(CGImageRef image) {
     return [results componentsJoinedByString:@"\n"];
 }
 
+static NSString *ocrImageJSON(CGImageRef image) {
+    if (!image) return nil;
+
+    CIImage *ciImage = [[CIImage alloc] initWithCGImage:image];
+
+    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc]
+        initWithCIImage:ciImage options:@{}];
+
+    VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] init];
+    request.recognitionLevel = 0;
+    request.recognitionLanguages = @[@"zh-Hans", @"en-US"];
+    request.usesLanguageCorrection = YES;
+
+    NSError *error = nil;
+    [handler performRequests:@[request] error:&error];
+    if (error) return @"[]";
+
+    NSMutableArray *jsonArr = [NSMutableArray array];
+    for (VNRecognizedTextObservation *obs in request.results) {
+        CGRect box = obs.boundingBox;
+        VNRecognizedText *top = [obs topCandidates:1].firstObject;
+        if (!top.string || top.string.length == 0) continue;
+        NSDictionary *item = @{
+            @"text": top.string,
+            @"x": @(box.origin.x),
+            @"y": @(1.0 - box.origin.y),
+            @"w": @(box.size.width),
+            @"h": @(box.size.height),
+        };
+        [jsonArr addObject:item];
+    }
+
+    if (jsonArr.count == 0) return @"[]";
+    NSError *jsonErr = nil;
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:jsonArr options:0 error:&jsonErr];
+    if (jsonErr) return @"[]";
+    return [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+}
+
+char *ocr_window_json(uint32_t window_id) {
+    @autoreleasepool {
+        CGImageRef image = captureWindow(window_id);
+        if (!image) return strdup("[]");
+
+        NSString *json = ocrImageJSON(image);
+        CGImageRelease(image);
+
+        if (!json) return strdup("[]");
+        return strdup([json UTF8String]);
+    }
+}
+
 char *ocr_window(uint32_t window_id) {
     @autoreleasepool {
         CGImageRef image = captureWindow(window_id);
