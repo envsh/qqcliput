@@ -12,6 +12,10 @@ var (
 	seenHashes   = map[string]bool{}
 	currentGroup string
 	firstOCR     = true
+	chatMinX     = 0.0
+	chatMaxX     = 1.0
+	knownW       = 0
+	knownH       = 0
 )
 
 func setStatus(text string) {
@@ -36,6 +40,7 @@ func captureLoop(ctx context.Context) {
 	fmt.Fprintf(os.Stderr, "=== qqcliput started ===\n")
 	w, h := cGetWindowBounds(wid)
 	fmt.Fprintf(os.Stderr, "QQ window detected: id=%d, size=%dx%d\n", wid, w, h)
+	knownW, knownH = w, h
 
 	setStatus("运行中")
 
@@ -59,8 +64,9 @@ func captureLoop(ctx context.Context) {
 				case wid = <-widCh:
 					fmt.Fprintf(os.Stderr, "=== qqcliput started ===\n")
 					w, h := cGetWindowBounds(wid)
+					knownW, knownH = w, h
 					fmt.Fprintf(os.Stderr, "QQ window detected: id=%d, size=%dx%d\n", wid, w, h)
-
+					firstOCR = true
 					setStatus("运行中")
 				case <-ctx.Done():
 					return
@@ -69,20 +75,33 @@ func captureLoop(ctx context.Context) {
 			continue
 		}
 
-		raw := cOCRWindowJSON(wid)
+		var raw string
+		if firstOCR {
+			raw = cOCRWindowJSON(wid)
+		} else {
+			if newW, newH := cGetWindowBounds(wid); newW != knownW || newH != knownH {
+				knownW, knownH = newW, newH
+				firstOCR = true
+				continue
+			}
+			raw = cOCRWindowRegionJSON(wid, chatMinX, 0.0, chatMaxX-chatMinX, 1.0)
+		}
 		if raw == "[]" || raw == "" {
 			continue
 		}
 
 		blocks := parseOCRJSON(raw)
-		blocks = filterChatArea(blocks)
+		if firstOCR {
+			blocks = filterChatArea(blocks)
+		}
 		if firstOCR && len(blocks) > 0 {
-			rawBlocks := parseOCRJSON(raw)
-			minX, maxX := autoChatRange(rawBlocks)
+			allBlocks := parseOCRJSON(raw)
+			minX, maxX := autoChatRange(allBlocks)
+			chatMinX, chatMaxX = minX, maxX
 			fmt.Fprintf(os.Stderr, "=== Auto-detected chat area: X %.2f ~ %.2f ===\n", minX, maxX)
 			const nb = 50
 			var buckets [nb]int
-			for _, b := range rawBlocks {
+			for _, b := range allBlocks {
 				cx := b.X + b.W/2
 				idx := int(cx / 0.02)
 				if idx >= nb {
@@ -117,11 +136,6 @@ func captureLoop(ctx context.Context) {
 		for i := len(groups) - 1; i >= 0; i-- {
 			msg := inferMessage(groups[i])
 			if msg.Type == "empty" {
-				continue
-			}
-
-			if name, ok := inferGroupTitle(groups[i]); ok {
-				currentGroup = name
 				continue
 			}
 

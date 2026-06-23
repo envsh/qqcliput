@@ -54,3 +54,12 @@ func cOCRWindowJSON(wid uint32) string {
 	defer C.free(unsafe.Pointer(cstr))
 	return C.GoString(cstr)
 }
+
+func cOCRWindowRegionJSON(wid uint32, nx, ny, nw, nh float64) string {
+	cstr := C.ocr_window_region_json(C.uint32_t(wid), C.double(nx), C.double(ny), C.double(nw), C.double(nh))
+	if cstr == nil {
+		return "[]"
+	}
+	defer C.free(unsafe.Pointer(cstr))
+	return C.GoString(cstr)
+}

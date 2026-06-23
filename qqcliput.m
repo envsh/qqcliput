@@ -220,3 +220,64 @@ char *get_window_bounds(uint32_t window_id) {
         return strdup("{}");
     }
 }
+
+static NSString *ocrImageRegionJSON(CGImageRef fullImage, CGFloat nx, CGFloat ny, CGFloat nw, CGFloat nh) {
+    CGFloat fullW = CGImageGetWidth(fullImage);
+    CGFloat fullH = CGImageGetHeight(fullImage);
+
+    CGRect cropRect = CGRectMake(nx * fullW, ny * fullH, nw * fullW, nh * fullH);
+    CGImageRef cropped = CGImageCreateWithImageInRect(fullImage, cropRect);
+    if (!cropped) return @"[]";
+
+    CIImage *ciImage = [[CIImage alloc] initWithCGImage:cropped];
+    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCIImage:ciImage options:@{}];
+
+    VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] init];
+    request.recognitionLevel = 0;
+    request.recognitionLanguages = @[@"zh-Hans", @"en-US"];
+    request.usesLanguageCorrection = YES;
+
+    NSError *error = nil;
+    [handler performRequests:@[request] error:&error];
+    if (error) { CGImageRelease(cropped); return @"[]"; }
+
+    NSMutableArray *jsonArr = [NSMutableArray array];
+    for (VNRecognizedTextObservation *obs in request.results) {
+        CGRect box = obs.boundingBox;
+        VNRecognizedText *top = [obs topCandidates:1].firstObject;
+        if (!top.string || top.string.length == 0) continue;
+
+        double bx = box.origin.x;
+        double by = 1.0 - box.origin.y;
+
+        NSDictionary *item = @{
+            @"text": top.string,
+            @"x": @(nx + bx * nw),
+            @"y": @(ny + by * nh),
+            @"w": @(box.size.width * nw),
+            @"h": @(box.size.height * nh),
+        };
+        [jsonArr addObject:item];
+    }
+
+    CGImageRelease(cropped);
+
+    if (jsonArr.count == 0) return @"[]";
+    NSError *jsonErr = nil;
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:jsonArr options:0 error:&jsonErr];
+    if (jsonErr) return @"[]";
+    return [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+}
+
+char *ocr_window_region_json(uint32_t window_id, double nx, double ny, double nw, double nh) {
+    @autoreleasepool {
+        CGImageRef image = captureWindow(window_id);
+        if (!image) return strdup("[]");
+
+        NSString *json = ocrImageRegionJSON(image, (CGFloat)nx, (CGFloat)ny, (CGFloat)nw, (CGFloat)nh);
+        CGImageRelease(image);
+
+        if (!json) return strdup("[]");
+        return strdup([json UTF8String]);
+    }
+}

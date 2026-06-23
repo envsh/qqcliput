@@ -146,15 +146,41 @@ func clusterBlocks(blocks []Block) [][]Block {
 	return groups
 }
 
+func splitSenderContent(text string) (sender, content string, ok bool) {
+	idx := strings.Index(text, "：")
+	if idx > 0 && idx <= 16 {
+		return strings.TrimSpace(text[:idx]), strings.TrimSpace(text[idx+3:]), true
+	}
+	idx = strings.Index(text, ":")
+	if idx > 0 && idx <= 16 {
+		return strings.TrimSpace(text[:idx]), strings.TrimSpace(text[idx+1:]), true
+	}
+	return "", "", false
+}
+
 func inferGroupTitle(group []Block) (string, bool) {
 	if len(group) != 1 {
 		return "", false
 	}
 	b := group[0]
-	if b.X > 0.2 && b.X < 0.8 && b.Text != "" {
-		return strings.TrimSpace(b.Text), true
+	t := strings.TrimSpace(b.Text)
+	if t == "" {
+		return "", false
 	}
-	return "", false
+	if isTimeString(t) {
+		return "", false
+	}
+	if strings.HasPrefix(t, "[") {
+		return "", false
+	}
+	cx := b.X + b.W/2
+	if cx < 0.30 || cx > 0.70 {
+		return "", false
+	}
+	if len([]rune(t)) < 4 || len([]rune(t)) > 25 {
+		return "", false
+	}
+	return t, true
 }
 
 func inferMessage(group []Block) Message {
@@ -162,24 +188,65 @@ func inferMessage(group []Block) Message {
 		return Message{Type: "empty"}
 	}
 
-	var sender, timeStr, content string
+	// Single block: try splitting "Sender：Content"
+	if len(group) == 1 {
+		t := strings.TrimSpace(group[0].Text)
+		if t == "" {
+			return Message{Type: "empty"}
+		}
+		if isTimeString(t) {
+			return Message{Time: t, Type: "text"}
+		}
+		sender, content, ok := splitSenderContent(t)
+		if !ok {
+			content = t
+		}
+		msgType := detectType(sender, "", content, group)
+		duration := ""
+		if msgType == "video" {
+			duration = extractDuration(content, group)
+		}
+		return Message{Sender: sender, Time: "", Type: msgType, Content: content, Duration: duration}
+	}
 
-	for _, b := range group {
+	// Multiple blocks: leftmost short block is sender, rest is content
+	sorted := make([]Block, len(group))
+	copy(sorted, group)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].X < sorted[j].X
+	})
+
+	var sender, timeStr, content string
+	senderFound := false
+
+	for i, b := range sorted {
 		t := strings.TrimSpace(b.Text)
 		if t == "" {
 			continue
 		}
-
 		if isTimeString(t) {
 			timeStr = t
-		} else if isSenderString(t, b.X) {
-			sender = t
-		} else {
-			if content != "" {
-				content += " "
-			}
-			content += t
+			continue
 		}
+		if !senderFound && isSenderString(t, b.X) {
+			// Very short text that's close to next block: OCR fragment, not sender
+			if len([]rune(t)) <= 3 && i+1 < len(sorted) {
+				if sorted[i+1].X-(b.X+b.W) < 0.03 {
+					if content != "" {
+						content += " "
+					}
+					content += t
+					continue
+				}
+			}
+			sender = t
+			senderFound = true
+			continue
+		}
+		if content != "" {
+			content += " "
+		}
+		content += t
 	}
 
 	content = strings.TrimSpace(content)
@@ -212,7 +279,7 @@ func isSenderString(s string, x float64) bool {
 	if len([]rune(s)) > 10 {
 		return false
 	}
-	if x > 0.40 {
+	if x > 0.45 {
 		return false
 	}
 	if isTimeString(s) {
@@ -221,11 +288,21 @@ func isSenderString(s string, x float64) bool {
 	if s == "" {
 		return false
 	}
-	if len([]rune(s)) <= 3 && strings.ContainsAny(s, "一二三四五六日天") {
-		return false
-	}
 	if strings.HasPrefix(s, "[") {
 		return false
+	}
+	// Reject pure numbers (OCR fragments from time stamps)
+	if len(s) <= 4 {
+		allDigits := true
+		for _, r := range s {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return false
+		}
 	}
 	return true
 }
